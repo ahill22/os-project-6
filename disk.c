@@ -17,7 +17,7 @@ Make all of your changes to main.c instead.
 extern ssize_t pread (int __fd, void *__buf, size_t __nbytes, __off_t __offset);
 extern ssize_t pwrite (int __fd, const void *__buf, size_t __nbytes, __off_t __offset);
 
-
+//typedef struct disk disk;
 struct disk {
 	int fd;
 	int block_size;

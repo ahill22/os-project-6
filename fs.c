@@ -70,9 +70,11 @@ int fs_format()
 
     //set aside 10% for inode blocks
     if(b % 10) {
+        //printf("1: %d\n", (block.super.nblocks / 10) + 1);
         block.super.ninodeblocks = (block.super.nblocks / 10) + 1;
     }
     else {
+        //printf("2: %d\n",(block.super.nblocks / 10));
         block.super.ninodeblocks = (block.super.nblocks / 10);
     }
 
@@ -85,7 +87,7 @@ int fs_format()
 
 	int i;
     for(i = 1; i < b; i++) {
-        disk_write(thedisk, i, reset.data); //writes superblock
+        disk_write(thedisk, i, reset.data); 
     }
 	return 1;
 }
@@ -97,29 +99,25 @@ void fs_debug()
 	disk_read(thedisk, 0, block.data); //read superblock
 
 	printf("superblock:\n");
-
-	if(block.super.magic == FS_MAGIC) {
-        printf("    magic number is valid\n");
-    } else{
-        printf("    magic number is not valid\n");
-    }
 	printf("    %d blocks\n",block.super.nblocks);
 	printf("    %d inode blocks\n",block.super.ninodeblocks);
 	printf("    %d inodes\n",block.super.ninodes);
 
 	union fs_block inodeBlock;
+    struct fs_inode inode;
 	int i, j, k, l;
 
     //scan inodes and blocks to report organization
-
 	for(i=1; i <= block.super.ninodeblocks; i++){
-		disk_read(thedisk, i, block.data);
+        //inode_load(i, &inode);
+		disk_read(thedisk, i, inodeBlock.data);
 		for(j=0; j < INODES_PER_BLOCK; j++){
             //printf("%d\n", inodeBlock.inode[j].isvalid)
-
-			if(inodeBlock.inode[j].isvalid){
+            //inode_load(i,&inode);
+			if(!inodeBlock.inode[j].isvalid){
 				printf("Inode %d:\n", j+(i-1)*INODES_PER_BLOCK);
 				printf("    size: %u bytes\n", inodeBlock.inode[j].size);
+                printf("    created: %ld \n", inodeBlock.inode[j].ctime);
 				printf("    direct blocks:");
 				for(k=0; k<POINTERS_PER_INODE; k++){
 					if(inodeBlock.inode[j].direct[k]){
@@ -462,17 +460,6 @@ int fs_write( int inumber, const char *data, int length, int offset )
 }
 
 void inode_load(int inumber, struct fs_inode *inode){    
-    if(!fs.disk) {
-        return;
-    }
-
-    if (!inumber >= fs.meta_data.ninodes) {
-        return ;
-    }
-
-    if (!inode) {
-        return ;
-    }
 
     union fs_block block;
     size_t block_num = (inumber / INODES_PER_BLOCK) + 1;
@@ -485,18 +472,6 @@ void inode_load(int inumber, struct fs_inode *inode){
 }
 
 void inode_save(int inumber, struct fs_inode *inode) {
-    
-    if(!fs.disk){
-        return ;
-    }
-
-    if (!inumber >= fs.meta_data.ninodes){
-        return ;
-    }
-
-    if(!inode){
-        return ;
-    }
 
     union fs_block block;
     size_t block_num = (inumber / INODES_PER_BLOCK) + 1;

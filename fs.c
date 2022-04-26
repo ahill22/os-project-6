@@ -504,34 +504,37 @@ int fs_write( int inumber, const char *data, int length, int offset )
             int indirectNum = 0;
 
             if(inode.indirect){
-                indirectNum = inode.indirect;
+                indirectNum = inode.indirect; //see if the inode currently has an indirect ptr
             }
 
             else {
                 int freeBlock = -1;
                 int i;
+		//if inore doesnt have an indirect ptr currently
                 for(i = 1; i < fs.meta.nblocks; i++) {
                     if(fs.free_blocks[i]) {
                         freeBlock = i;
-                        fs.free_blocks[freeBlock] = false;
+                        fs.free_blocks[freeBlock] = false; //update bitmap
                         break;
                     }
                 }
 
-                if(freeBlock == -1) break;
+                if(freeBlock == -1){
+		    break; //break out of while loop
+		}
 
                 union fs_block zeroBlock = {{0}};      
 
-                disk_write(thedisk, freeBlock, zeroBlock.data);
+                disk_write(thedisk, freeBlock, zeroBlock.data); //write data to freeblock index
 
                 indirectNum = freeBlock;
-                inode.indirect = indirectNum;
+                inode.indirect = indirectNum; //update indirect info
             }
 
             union fs_block indirect;
             disk_read(thedisk, inode.indirect, indirect.data);
 
-            pointer = indirect.pointers[nPointer - POINTERS_PER_INODE];
+            pointer = indirect.pointers[nPointer - POINTERS_PER_INODE]; //block num 
 
             if(!pointer) {
                 int freeBlock = -1;
@@ -539,42 +542,45 @@ int fs_write( int inumber, const char *data, int length, int offset )
                 for(i = 1; i < fs.meta.nblocks; i++) {
                     if(fs.free_blocks[i]) {
                         freeBlock = i;
-                        fs.free_blocks[freeBlock] = false;
+                        fs.free_blocks[freeBlock] = false; //update the bitmap
                         break;
                     }
                 }
 
-                if(freeBlock < 0)
-                    break;
+                if(freeBlock < 0) {
+                    break; //break out of while loop
+		}
 
-                writeBlock = freeBlock;     
+                writeBlock = freeBlock; //updates our write block
             }
 
             else{
-                writeBlock = pointer;     
+                writeBlock = pointer; //write = indirect  
             }
 
             int i;
             for(i = mod; i < BLOCK_SIZE; i++) {
-                if(bytes >= length)
+                if(bytes >= length){
                     break;
-                readBlock.data[i] = data[bytes];
+		}
+                readBlock.data[i] = data[bytes]; //write the data to our blocks
                 bytes++;
             }
 
             indirect.pointers[nPointer - POINTERS_PER_INODE] = writeBlock;
         
-            disk_write(thedisk, writeBlock, readBlock.data);
-            disk_write(thedisk, indirectNum, indirect.data);
+            disk_write(thedisk, writeBlock, readBlock.data); //write data to writeblock index
+            disk_write(thedisk, indirectNum, indirect.data); //write indirect data to indirectnum index
         }
 
-        nPointer++;     
+        nPointer++; //increment block ptr
     }
 
+    //set inode info
     inode.isvalid = true;
     inode.size = bytes + offset;
 
-    inode_save(inumber, &inode);
+    inode_save(inumber, &inode); //save inode
 
     return bytes;
 }

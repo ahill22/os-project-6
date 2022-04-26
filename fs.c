@@ -508,7 +508,6 @@ int fs_write( int inumber, const char *data, int length, int offset )
                 bytes++;
             }
 
-            mOffset = 0; 
             indirect.pointers[nPointer - POINTERS_PER_INODE] = wBlock;
         
             disk_write(thedisk, wBlock, rBlock.data);

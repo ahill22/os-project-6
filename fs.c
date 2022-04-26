@@ -11,6 +11,7 @@ Make your changes here.
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 extern struct disk *thedisk;
 
@@ -44,9 +45,9 @@ union fs_block {
 
 typedef struct FileSystem FileSystem;
 struct FileSystem {
-    struct disk         *disk;
-    bool                *free_blocks;
-    struct fs_superblock  meta_data;
+    struct disk *disk;
+    bool *free_blocks;
+    struct fs_superblock meta;
 };
 
 int32_t fs_allocate_free_block();
@@ -59,35 +60,38 @@ FileSystem fs = {0};
 int fs_format()
 {
     if(fs.disk){
+        printf("disk is already mounted\n");
         return 0;
     }
-    union fs_block block;
-    block.super.magic = FS_MAGIC;
+
+    //create super block
+    union fs_block sblock = {{0}};
+    sblock.super.magic = FS_MAGIC;
 	int b = disk_nblocks(thedisk);
     //printf("%d\n", b);
-	block.super.nblocks = b;
+	sblock.super.nblocks = b;
     //printf("%d\n", block.super.nblocks);
 
     //set aside 10% for inode blocks
     if(b % 10) {
         //printf("1: %d\n", (block.super.nblocks / 10) + 1);
-        block.super.ninodeblocks = (block.super.nblocks / 10) + 1;
+        sblock.super.ninodeblocks = (sblock.super.nblocks / 10) + 1;
     }
     else {
         //printf("2: %d\n",(block.super.nblocks / 10));
-        block.super.ninodeblocks = (block.super.nblocks / 10);
+        sblock.super.ninodeblocks = (sblock.super.nblocks / 10);
     }
+    //set total number of inodes
+    sblock.super.ninodes = sblock.super.ninodeblocks * INODES_PER_BLOCK;
 
-    block.super.ninodes = block.super.ninodeblocks * INODES_PER_BLOCK;
-
-    disk_write(thedisk, 0, block.data);
+    disk_write(thedisk, 0, sblock.data);
     
     //clear the inode bitmap
-	union fs_block reset = {{0}};
-
+    struct fs_inode inode;
+    memset(&inode, 0, sizeof(inode)); //set inode to 0
 	int i;
-    for(i = 1; i < b; i++) {
-        disk_write(thedisk, i, reset.data); 
+    for(i = 1; i < sblock.super.ninodes; i++) {
+        inode_save(i, &inode); //save all inodes as 0
     }
 	return 1;
 }
@@ -96,71 +100,67 @@ void fs_debug()
 {
 	union fs_block block;
 
+    //disk read error checks for us 
 	disk_read(thedisk, 0, block.data); //read superblock
 
+    //print superblock info
 	printf("superblock:\n");
 	printf("    %d blocks\n",block.super.nblocks);
 	printf("    %d inode blocks\n",block.super.ninodeblocks);
 	printf("    %d inodes\n",block.super.ninodes);
 
-	union fs_block inodeBlock;
-    struct fs_inode inode;
-	int i, j, k, l;
+	int i, k, l;
 
-    //scan inodes and blocks to report organization
-	for(i=1; i <= block.super.ninodeblocks; i++){
-        //inode_load(i, &inode);
-		disk_read(thedisk, i, inodeBlock.data);
-		for(j=0; j < INODES_PER_BLOCK; j++){
-            //printf("%d\n", inodeBlock.inode[j].isvalid)
-            //inode_load(i,&inode);
-			if(!inodeBlock.inode[j].isvalid){
-				printf("Inode %d:\n", j+(i-1)*INODES_PER_BLOCK);
-				printf("    size: %u bytes\n", inodeBlock.inode[j].size);
-                printf("    created: %ld \n", inodeBlock.inode[j].ctime);
-				printf("    direct blocks:");
-				for(k=0; k<POINTERS_PER_INODE; k++){
-					if(inodeBlock.inode[j].direct[k]){
-						printf(" %u", inodeBlock.inode[j].direct[k]);
-					}
-				}
-				printf("\n");
-				
-				if(inodeBlock.inode[j].indirect){	
-                    union fs_block indirect;
-                    disk_read(thedisk, inodeBlock.inode[j].indirect, indirect.data);
-                    printf("   indirect block: %u\n", inodeBlock.inode[j].indirect);
-                    printf("   indirect data blocks:");
-
-                    for(l=0; l<POINTERS_PER_BLOCK; l++){
-                        if(indirect.pointers[l]){
-                            printf(" %u\n", indirect.pointers[l]);
-                        }
-                    }
-                    printf("\n");
+    //scan inodes 
+	for(i=0; i < block.super.ninodeblocks * INODES_PER_BLOCK; i++){
+        //printf("hi\n");
+        //create inode and load the desired inode
+        struct fs_inode inode;
+        inode_load(i, &inode);
+		
+        //print out inode info if it's valid
+		if(inode.isvalid){
+            printf("Inode %d:\n", i);
+            printf("    size: %u bytes\n", inode.size);
+            printf("    created: %s", ctime(&inode.ctime));
+            printf("    direct blocks:");
+            for(k=0; k<POINTERS_PER_INODE; k++){
+                if(inode.direct[k]){
+                    printf(" %u", inode.direct[k]);
                 }
-			}
-		}
+            }
+			printf("\n");
+            //check for indirect blocks
+            if(inode.indirect){	
+                union fs_block indirect;
+                disk_read(thedisk, inode.indirect, indirect.data);
+                //print out indirect blocks info
+                printf("   indirect block: %u\n", inode.indirect);
+                printf("   indirect data blocks:");
+
+                for(l=0; l<POINTERS_PER_BLOCK; l++){
+                    if(indirect.pointers[l]){
+                        printf(" %u", indirect.pointers[l]);
+                    }
+                }
+                printf("\n");
+            }
+        }
+		
 	}
 }
 
 int fs_mount()
 {
-    // check if disk present in fs
-	if(fs.disk || !thedisk){
-        printf("mount is about to fail");
-		return 0;
-	}
 
     union fs_block block;
-    disk_read(thedisk, 0, block.data);
+    disk_read(thedisk, 0, block.data); //read superblock 
 	int b = disk_nblocks(thedisk);
-
+    //error check
     if(block.super.magic != FS_MAGIC || block.super.nblocks != b || block.super.ninodes != (block.super.ninodeblocks * INODES_PER_BLOCK)) {
-    	//printf("mount about to fail\n");
 		return 0;
     }
-
+    //check that there are the correct number of inode blocks
     if(!(b % 10)) {
         if(block.super.ninodeblocks < (b / 10)) {
             return 0;
@@ -171,330 +171,380 @@ int fs_mount()
     }
 	
     // preparing fs for use
-    fs.meta_data = block.super;
+    fs.meta = block.super;
     fs.disk = thedisk;
-    fs.free_blocks = calloc(fs.meta_data.nblocks, sizeof(bool));
 
-
-	int i, j, k, l, m;
-    for( i = fs.meta_data.ninodeblocks + 1; i < fs.meta_data.nblocks; i++) {
+    //allocate space for bitmap 
+    fs.free_blocks = calloc(fs.meta.nblocks, sizeof(bool));
+    if(!fs.free_blocks){
+        printf("Calloc failed\n");
+        return 0;
+    }
+    //set super blcok and inode blocks to false right away 
+    //iterate through all inodes and do inode load. go through direct and indirects and check if the blocks are valid, then set to zero for bit map
+    
+	int i, j, k;
+    //initialize bitmap
+    for( i = fs.meta.ninodeblocks + 1; i < fs.meta.nblocks; i++) {
         fs.free_blocks[i] = true;
     }
-
-    for( j = 1; j <= fs.meta_data.ninodeblocks; j++) {
-        union fs_block curr;
-        disk_read(fs.disk, j, curr.data);
-
-        for( k = 0; k < INODES_PER_BLOCK; k++) {
-            if(!curr.inode[k].isvalid) {
-                continue;
+    //inodes already in use
+    for(i= 0; i < fs.meta.ninodeblocks +1; i++){
+        fs.free_blocks[i] = false;
+    }
+    
+    for(i = 0; i < fs.meta.ninodes; i++) {
+        struct fs_inode inode;
+        inode_load(i, &inode);
+        //iterate though the pointers in the inode
+        for(j = 0; j < POINTERS_PER_INODE; j++) {
+            if(inode.direct[j]) {
+                fs.free_blocks[inode.direct[j]] = false; //mark the blocks in use
             }
-
-            for( l = 0; l < POINTERS_PER_INODE; l++) {
-                if(curr.inode[k].direct[l]) {
-                    fs.free_blocks[curr.inode[k].direct[l]] = false;
-                }
-            }
-
-            if(!curr.inode[k].indirect) {
-                continue;
-            }
-
-            fs.free_blocks[curr.inode[k].indirect] = false;
+        }
+        //check for indirect blocks
+        if(inode.indirect) {        
+            fs.free_blocks[inode.indirect] = false;
 
             union fs_block indirect_block;
-            disk_read(fs.disk, curr.inode[k].indirect, indirect_block.data);
 
-            for( m = 0; m < POINTERS_PER_BLOCK; m++) {
-                if(indirect_block.pointers[m]) {
-                    fs.free_blocks[indirect_block.pointers[m]] = false;
+            disk_read(thedisk, inode.indirect, indirect_block.data);
+            //printf("hi\n");
+            //iterate through the pointers in each block
+            for(k = 0; k < POINTERS_PER_BLOCK; k++) {
+                if(indirect_block.pointers[k]) {
+                    fs.free_blocks[indirect_block.pointers[k]] = false; //mark the bitmap for blocks in use
                 }
             }
         }
     }
-
 	return 1;
 }
 
 int fs_create()
 {
-	union fs_block b;
-	int i, j, k;
-    for ( i = 1; i <= fs.meta_data.ninodeblocks; i++) {
-        disk_read(fs.disk, i, b.data);
-
-
-        for ( j = 0; j < INODES_PER_BLOCK; j++) {
-            if(!b.inode[j].isvalid) {
-                printf("inside if\n");
-                b.inode[j].isvalid = 1;
-                for ( k = 0; k < POINTERS_PER_INODE; k++) {
-                    b.inode[j].direct[k] = 0;
-                }
-
-                b.inode[j].indirect = 0;
-                b.inode[j].size = 0;
-
-                disk_write(fs.disk, i, b.data);
-                printf("%d\n", j + ((i-1) * INODES_PER_BLOCK));
-                return (j + ((i-1) * INODES_PER_BLOCK));
-            }
+    int i;
+    for( i = 1; i < fs.meta.ninodeblocks * INODES_PER_BLOCK; i++) {
+        struct fs_inode inode;
+        inode_load(i, &inode);
+        
+        //if already valid/exists continue to the next one
+        if(inode.isvalid){
+            continue;
         }
+        inode.size = 0;
+        inode.isvalid = true;
+        int inumber = i;
+        
+        inode_save(inumber, &inode);
+        
+        // update superblock
+        union fs_block b;
+        disk_read(thedisk, 0, b.data);
+        //printf("inum %d\n", inumber);
+        return inumber;
     }
-	return 0;
+    
+    return 0;
 }
 
 int fs_delete( int inumber )
 {
-	union fs_block b;
-    size_t inode_index = inumber % INODES_PER_BLOCK;
-    size_t inode_block = (inumber / INODES_PER_BLOCK) + 1;
+    // error check
+    if(inumber < 0 || inumber > fs.meta.ninodes){
+        printf("invalid inumber\n");
+        return 0;
+    } 
 
-    disk_read(fs.disk, inode_block, b.data);
+    struct fs_inode inode;
+    inode_load(inumber, &inode);
 
-    if(!b.inode[inode_index].isvalid) {
+    //error check
+    if(!inode.isvalid){
+        printf("invalid inode\n");
         return 0;
     }
-	int i, j;
+
+    // remove direct blocks
+    inode.isvalid = false;
+    int i;
     for( i = 0; i < POINTERS_PER_INODE; i++) {
-        if(b.inode[inode_index].direct[i]) {
-            fs.free_blocks[b.inode[inode_index].direct[i]] = true;
-            b.inode[inode_index].direct[i] = 0;
-        }
+        fs.free_blocks[inode.direct[i]] = true; //update the bitmap
+        inode.direct[i] = 0;
+        inode.size = 0;
     }
+    
+    //remove indirect blocks
+    if(inode.indirect) {
+        union fs_block indirect;
 
-    if(b.inode[inode_index].indirect) {
-        union fs_block indirect_block;
-        disk_read(fs.disk, b.inode[inode_index].indirect, indirect_block.data);
+        disk_read(thedisk, inode.indirect, indirect.data);
 
-        //delete contents of inode
-        for( j = 0; j < POINTERS_PER_BLOCK; j++) {
-
-            if(indirect_block.pointers[j]) {
-                fs.free_blocks[indirect_block.pointers[j]] = true;
-                indirect_block.pointers[j] = 0;
+        for(i = 0; i < POINTERS_PER_BLOCK; i++) {
+            if(indirect.pointers[i]) {
+                fs.free_blocks[indirect.pointers[i]] = true; //update the bitmap 
+                indirect.pointers[i] = 0;
             }
         }
 
-        fs.free_blocks[b.inode[inode_index].indirect] = true;
-        b.inode[inode_index].indirect = 0;
+        fs.free_blocks[inode.indirect] = true;
+        inode.indirect = 0;
     }
 
-    b.inode[inode_index].isvalid = 0;
-    b.inode[inode_index].size = 0;
-
-    disk_write(fs.disk, inode_block, b.data);
-
-	return 0;
+    inode.size = 0;
+    inode_save(inumber, &inode);
+    
+    return 1;
 }
 
 int fs_getsize( int inumber )
 {
-	union fs_block b;
-	int i, j;
-    for ( i = 1; i <= fs.meta_data.ninodeblocks; i++) {
+    struct fs_inode inode;
+    inode_load(inumber, &inode);
 
-        disk_read(fs.disk, i, b.data);
-
-		for ( j = 0; j < INODES_PER_BLOCK; j++) {
-			int curr_inode = j + (i-1) * INODES_PER_BLOCK;
-
-			if (inumber == curr_inode) {
-
-				if (b.inode[j].isvalid) {
-					return b.inode[j].size;
-				}
-				else {
-					return -1;
-				}
-			}
-		}
+    if(inumber >= fs.meta.ninodes){
+        printf("invalid inumber\n");
+        return -1;
     }
+    if(!inode.isvalid){
+        printf("invalid inode\n");
+        return -1;
+    }
+    if(inode.size >= 0){
+        return inode.size; //returns the size of the inode in bytes
+    } 
     return -1;
 }
 
 int fs_read( int inumber, char *data, int length, int offset )
 {
-    union fs_block b;
-    size_t inode_block = (inumber / INODES_PER_BLOCK) + 1;
-
-    disk_read(fs.disk, inode_block, b.data);
-
-    size_t inode_index = inumber % INODES_PER_BLOCK;
-
-     if (!b.inode[inode_index].isvalid) {
-          return 0;
-     }
-
-     if (offset > b.inode[inode_index].size) {
-          return 0;
-     }
-
-     size_t curr = offset / BLOCK_SIZE;
-     size_t bytes_read = 0;
-     size_t start = offset;
-
-     while (length > bytes_read && offset < b.inode[inode_index].size) {
-        union fs_block temp;
-        if (curr < POINTERS_PER_INODE) {
-            disk_read(fs.disk, b.inode[inode_index].direct[curr], temp.data);
-        }
-        else if (b.inode[inode_index].indirect) {
-            union fs_block indirect_block;
-
-            disk_read(fs.disk, b.inode[inode_index].indirect, indirect_block.data);
-
-            disk_read(fs.disk, indirect_block.pointers[curr - POINTERS_PER_INODE], temp.data);
-        }
-        int i;
-        for (i = (start % BLOCK_SIZE); i < BLOCK_SIZE; i++) {
-
-            if (bytes_read >= length || offset >= b.inode[inode_index].size) {
-                break;
-            }
-
-            data[bytes_read] = temp.data[i];
-            bytes_read += 1;
-            offset += 1;
-        }
-
-        start = 0;
-        curr += 1;
+   // printf("entering fs_read\n");
+    if(inumber < 0)
+    {
+        printf("invalid inumber\n");
+        return 0;
     }
-    return bytes_read;
+    if(fs.meta.ninodes < inumber)
+    {
+        printf("invalid inumber\n");
+        return 0;
+    }
+
+    struct fs_inode inode;
+    inode_load(inumber, &inode);
+    if(!inode.isvalid) //ensures inode is valid
+    {
+        printf("invalid inode\n");
+        return 0;
+    }
+    
+    //adjust the length based on size of the inode
+    if (length > inode.size){
+        length = inode.size;
+    }
+    if(inode.size < offset || length <= 0){
+        return 0;
+    }
+
+    int bytes = 0;
+    int i;
+    for(i = offset/BLOCK_SIZE; i < POINTERS_PER_INODE; i++) {
+        union fs_block direct;
+        disk_read(thedisk, inode.direct[i], direct.data);
+        if((length - bytes) < BLOCK_SIZE) {
+            memcpy(data + bytes, &direct.data, length - bytes);
+            bytes = length;
+            return bytes;
+        }
+        else {
+            memcpy(data + bytes, &direct.data, BLOCK_SIZE);
+            bytes = bytes + BLOCK_SIZE;
+        }
+    }
+
+    uint32_t read_size = inode.size;
+    if((read_size - offset) < length) length = read_size - offset;
+
+    // indirect blocks
+    union fs_block indirect;
+    if(inode.indirect) {            
+        uint32_t initial_block = (offset - (POINTERS_PER_INODE * BLOCK_SIZE))/ BLOCK_SIZE;
+
+        for( i = initial_block; i < POINTERS_PER_BLOCK; i++) {
+            disk_read(thedisk, indirect.pointers[i], indirect.data);
+
+            if((length - bytes) < BLOCK_SIZE) {
+                memcpy(data + bytes, &indirect.data, length - bytes);
+                bytes = length;
+                return bytes;
+            }
+            else {
+                memcpy(data + bytes, &indirect.data, BLOCK_SIZE);
+                bytes = bytes + BLOCK_SIZE;
+            }
+        }
+    }
+    return bytes;
 }
 
 int fs_write( int inumber, const char *data, int length, int offset )
 {
+    
     struct fs_inode inode;
-
     inode_load(inumber, &inode);
 
-    size_t bytes = 0;
-    size_t read_block = offset / BLOCK_SIZE;
-    size_t write_offset = offset % BLOCK_SIZE;
+    if(!inode.isvalid || offset > inode.size){
+        printf("invalid inode\n");
+        return 0;
+    }
+    
+    if((length + offset) > ((POINTERS_PER_INODE * BLOCK_SIZE) + (POINTERS_PER_BLOCK * BLOCK_SIZE))) {
+        return 0;
+    }
 
-    union fs_block wBlock;
-    size_t block_num;
+    int wBlock;
+    int nPointer = offset/BLOCK_SIZE; //how many blocks we need
+    int bytes = 0;
+    int a = offset % BLOCK_SIZE;
 
-    while(bytes < length){
+    while(length > bytes) {
+        union fs_block rBlock = {{0}};
+        int pointer = 0;
 
-        if(read_block < POINTERS_PER_INODE){
-
-            if(!inode.direct[read_block]){
-                inode.direct[read_block] = fs_allocate_free_block();
-            }
-
-            block_num = inode.direct[read_block];
-            if(block_num < 0 || block_num > fs.meta_data.nblocks){
-                break;
-            }
-
-            disk_read(fs.disk, block_num, wBlock.data);
-        }
-        else {
-            union fs_block indir;
-            if(!inode.indirect){
-                inode.indirect = fs_allocate_free_block();   
-            
-                disk_read(fs.disk, inode.indirect, indir.data);
-                
-                int k;
-                for (k = 0; k < POINTERS_PER_BLOCK ; k++ ){ 
-                    if(indir.pointers[k]){
-                        if(indir.pointers[k] < fs.meta_data.nblocks){
-                            fs.free_blocks[indir.pointers[k]] = true;
-                        }
-                        indir.pointers[k] = 0;
+        // direct blocks
+        if(nPointer < POINTERS_PER_INODE) {
+            pointer = nPointer;
+            if(inode.direct[pointer]){
+                wBlock = inode.direct[pointer];
+            } 
+            else {
+                int i;
+                int freeBlock = -1;
+                for( i = 0; i < disk_nblocks(thedisk); i++) {
+                    if(fs.free_blocks[i]) {
+                        freeBlock = i;
+                        fs.free_blocks[freeBlock] = false;
+                        break;
                     }
                 }
-            }
-            else {
-                
-                disk_read(fs.disk, inode.indirect, indir.data);
-            } 
 
-            size_t index = read_block - POINTERS_PER_INODE; 
-            if(index > POINTERS_PER_BLOCK){
-                break;
-            }
-            
-            if(!indir.pointers[index]){
-                indir.pointers[index] = fs_allocate_free_block();   
+                if(freeBlock == -1) break;
+
+                wBlock = freeBlock;
             }
 
-            if(indir.pointers[index] < 0 || indir.pointers[index] > fs.meta_data.nblocks){
-                indir.pointers[index] = 0;
-                break;
-            }
-            
-            disk_write(fs.disk, inode.indirect, indir.data);
-            
-            disk_read(fs.disk, indir.pointers[index], wBlock.data);
-        }
-        int point;
-        for(point = write_offset; point < BLOCK_SIZE; point++){
-
-            if(bytes >= length){
-                break;
-            }
-
-            wBlock.data[point] = data[bytes];
-            bytes++;
-            offset++;
-        }
-
-        disk_write(fs.disk, block_num, wBlock.data);
-
-        write_offset = 0;
-        read_block++;
-    }
         
-    if(offset > inode.size){
-        inode.size = offset;
+            int i;
+            for(i = a; i < BLOCK_SIZE; i++) {
+                if(bytes >= length) break;
+                rBlock.data[i] = data[bytes];
+                bytes++;
+            
+            disk_write(thedisk, wBlock, rBlock.data);
+
+            inode.direct[pointer] = wBlock;
+            }
+        }
+
+        // indirect blocks
+        else if(nPointer < (POINTERS_PER_BLOCK + POINTERS_PER_INODE)) {
+            int indirectNum = 0;
+
+            if(inode.indirect){
+                indirectNum = inode.indirect;
+            }
+
+            else {
+                int freeBlock = -1;
+                int i;
+                for(i = 1; i < fs.meta.nblocks; i++) {
+                    if(fs.free_blocks[i]) {
+                        freeBlock = i;
+                        fs.free_blocks[freeBlock] = false;
+                        break;
+                    }
+                }
+
+                if(freeBlock == -1) break;
+
+                union fs_block zero_block = {{0}};      
+
+                disk_write(thedisk, freeBlock, zero_block.data);
+
+                indirectNum = freeBlock;
+                inode.indirect = indirectNum;
+            }
+
+            union fs_block indirect;
+            disk_read(thedisk, inode.indirect, indirect.data);
+
+            pointer = indirect.pointers[nPointer - POINTERS_PER_INODE];
+
+            if(!pointer) {
+                int freeBlock = -1;
+                int i;
+                for(i = 1; i < fs.meta.nblocks; i++) {
+                    if(fs.free_blocks[i]) {
+                        freeBlock = i;
+                        fs.free_blocks[freeBlock] = false;
+                        break;
+                    }
+                }
+
+                if(freeBlock < 0)
+                    break;
+
+                wBlock = freeBlock;     
+            }
+
+            else
+                wBlock = pointer;     
+
+            int i;
+            for(i = a; i < BLOCK_SIZE; i++) {
+                if(bytes >= length)
+                    break;
+                rBlock.data[i] = data[bytes];
+                bytes++;
+            }
+
+            mOffset = 0; 
+            indirect.pointers[nPointer - POINTERS_PER_INODE] = wBlock;
+        
+            disk_write(thedisk, wBlock, rBlock.data);
+
+            disk_write(thedisk, indirectNum, indirect.data);
+        }
+
+        nPointer++;     
     }
+
+    inode.isvalid = true;
+    inode.size = bytes + offset;
 
     inode_save(inumber, &inode);
-    
+
     return bytes;
 }
 
 void inode_load(int inumber, struct fs_inode *inode){    
-
+    //printf("in inode load\n");
     union fs_block block;
-    size_t block_num = (inumber / INODES_PER_BLOCK) + 1;
-    size_t offset = inumber % INODES_PER_BLOCK;
+    int blockNum = (inumber / INODES_PER_BLOCK) + 1; //plus 1 skips the super block 
+    int offset = inumber % INODES_PER_BLOCK;
 
-    disk_read(fs.disk, block_num, block.data);
-
-    memcpy(inode, &block.inode[offset],  sizeof(struct fs_inode));
-
+    disk_read(thedisk, blockNum, block.data);
+    *inode = block.inode[offset];
 }
 
 void inode_save(int inumber, struct fs_inode *inode) {
 
     union fs_block block;
-    size_t block_num = (inumber / INODES_PER_BLOCK) + 1;
-    size_t offset = inumber % INODES_PER_BLOCK;
+    int blockNum = (inumber / INODES_PER_BLOCK) + 1;
+    int offset = inumber % INODES_PER_BLOCK;
 
-    disk_read(fs.disk, block_num, block.data);
+    disk_read(thedisk, blockNum, block.data);
 
-    memcpy(&block.inode[offset], inode, sizeof(struct fs_inode));
-
-    disk_write(fs.disk, block_num, block.data);
-}
-
-int32_t fs_allocate_free_block(){
-
-    int32_t b;
-    for (b = fs.meta_data.ninodeblocks + 1; b < fs.meta_data.nblocks; b++){
-
-        if(fs.free_blocks[b] == 1){
-            fs.free_blocks[b] = 0;
-            return b;
-        }
-    }
-
-    return -1;
-
+    block.inode[offset] = *inode;
+    disk_write(thedisk, blockNum, block.data);
 }
